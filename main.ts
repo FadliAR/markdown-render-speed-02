@@ -1,29 +1,23 @@
-// Driver for the markdown-render-speed-02 entry.
+// Entry point for the markdown-render-speed-02 submission.
 //
-// The harness places this repository at /bot, the test cases at
-// /input/cases.json and expects the rendered HTML at
-// /output/html.json. Input and output directories can be overridden
-// through the MAKEFUN_INPUT_DIR / MAKEFUN_OUTPUT_DIR environment
-// variables, which is handy for local practice runs.
+// The grader drops this repository at /bot and the case set at
+// /input/cases.json; the program renders every case with parse() from
+// parse.js and writes the HTML strings, in order, to /output/html.json.
+// When run outside the grader, MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR
+// may point at stand-in folders (the kit's practice set, say).
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from './parse.js';
 
-interface Case {
-  id: string;
-  markdown: string;
+type Case = { id: string; markdown: string };
+
+const inDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+
+const cases = JSON.parse(readFileSync(join(inDir, 'cases.json'), 'utf8')) as Case[];
+const out: string[] = [];
+for (const c of cases) {
+  out.push(parse(c.markdown));
 }
-
-const inputDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
-const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-
-const raw = readFileSync(join(inputDir, 'cases.json'), 'utf8');
-const cases = JSON.parse(raw) as Case[];
-
-const html: string[] = new Array<string>(cases.length);
-for (let i = 0; i < cases.length; i++) {
-  html[i] = parse(cases[i].markdown);
-}
-
-writeFileSync(join(outputDir, 'html.json'), JSON.stringify(html));
+writeFileSync(join(outDir, 'html.json'), JSON.stringify(out));
