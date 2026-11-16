@@ -96,6 +96,7 @@ function numericRefAt(s, i) {
 // and any other "&" that starts an underscore-bearing entity-like
 // sequence positioned after the first reference is escaped to &amp;.
 function transformText(raw) {
+  if (!raw.includes('&')) return raw;
   let firstRefEnd = -1;
   for (let i = 0; i < raw.length; i++) {
     if (raw[i] === '&') {
@@ -451,25 +452,36 @@ function scanRefLabel(src, i) {
 
 // Try a GFM bare autolink (protocol URL, www. URL, email) at src[i].
 // kind: 'url' | 'email'. Returns { text, href, len } or null.
-function matchBareAutolink(src, i, prevChar) {
-  const rest = src.slice(i);
-  let m = PROTOCOL_RE.exec(rest);
-  if (m) {
+function matchBareAutolink(src, i, getPrev) {
+  const len = src.length;
+  const c0 = src[i];
+  // protocol URLs: http://, https://, ftp:// (case-insensitive)
+  let plen = 0;
+  const c1 = src[i + 1], c2 = src[i + 2], c3 = src[i + 3];
+  if ((c0 === 'h' || c0 === 'H') && (c1 === 't' || c1 === 'T') && (c2 === 't' || c2 === 'T') && (c3 === 'p' || c3 === 'P')) {
+    const c4 = src[i + 4];
+    if (c4 === ':' && src[i + 5] === '/' && src[i + 6] === '/') plen = 7;
+    else if ((c4 === 's' || c4 === 'S') && src[i + 5] === ':' && src[i + 6] === '/' && src[i + 7] === '/') plen = 8;
+  } else if ((c0 === 'f' || c0 === 'F') && (c1 === 't' || c1 === 'T') && (c2 === 'p' || c2 === 'P') &&
+             c3 === ':' && src[i + 4] === '/' && src[i + 5] === '/') {
+    plen = 6;
+  }
+  if (plen > 0) {
     // domain: (label + optional dot)+ then everything up to ws or '<'
-    let j = m[0].length;
+    let j = i + plen;
     let labels = 0;
-    while (j < rest.length) {
+    while (j < len) {
       let k = j;
-      while (k < rest.length && /[a-zA-Z0-9-]/.test(rest[k])) k++;
+      while (k < len && isLabelCode(src.charCodeAt(k))) k++;
       if (k === j) break;
       labels++;
       j = k;
-      if (rest[j] === '.') j++;
+      if (src[j] === '.') j++;
       else break;
     }
     if (labels === 0) return null;
-    while (j < rest.length && !/[\s<]/.test(rest[j])) j++;
-    let text = rest.slice(0, j);
+    while (j < len && src[j] !== '<' && !WS_RE.test(src[j])) j++;
+    let text = src.slice(i, j);
     let prev;
     do {
       prev = text;
@@ -479,48 +491,66 @@ function matchBareAutolink(src, i, prevChar) {
     if (text === '') return null;
     return { text, href: text, len: text.length };
   }
-  if (rest.startsWith('www.') &&
-      (prevChar === null || prevChar === ' ' || prevChar === '\t' || prevChar === '\n' ||
-       prevChar === '(' || prevChar === '*' || prevChar === '_' || prevChar === '~' || WS_RE.test(prevChar))) {
-    let j = 4;
-    let labels = 0;
-    while (j < rest.length) {
-      let k = j;
-      while (k < rest.length && /[a-zA-Z0-9-]/.test(rest[k])) k++;
-      if (k === j) break;
-      labels++;
-      j = k;
-      if (rest[j] === '.') j++;
-      else break;
+  if (src.startsWith('www.', i)) {
+    const prevChar = getPrev();
+    if (prevChar === null || prevChar === ' ' || prevChar === '\t' || prevChar === '\n' ||
+        prevChar === '(' || prevChar === '*' || prevChar === '_' || prevChar === '~' || WS_RE.test(prevChar)) {
+      let j = i + 4;
+      let labels = 0;
+      while (j < len) {
+        let k = j;
+        while (k < len && isLabelCode(src.charCodeAt(k))) k++;
+        if (k === j) break;
+        labels++;
+        j = k;
+        if (src[j] === '.') j++;
+        else break;
+      }
+      if (labels === 0) return null;
+      while (j < len && src[j] !== '<' && !WS_RE.test(src[j])) j++;
+      let text = src.slice(i, j);
+      let prev;
+      do {
+        prev = text;
+        const b = BACKPEDAL_RE.exec(text);
+        text = b ? b[0] : '';
+      } while (text !== prev && text !== '');
+      if (text === '') return null;
+      return { text, href: 'http://' + text, len: text.length };
     }
-    if (labels === 0) return null;
-    while (j < rest.length && !/[\s<]/.test(rest[j])) j++;
-    let text = rest.slice(0, j);
-    let prev;
-    do {
-      prev = text;
-      const b = BACKPEDAL_RE.exec(text);
-      text = b ? b[0] : '';
-    } while (text !== prev && text !== '');
-    if (text === '') return null;
-    return { text, href: 'http://' + text, len: text.length };
   }
   // email protocols
-  if (rest.startsWith('mailto:') || rest.startsWith('xmpp:')) {
-    const off = rest.indexOf(':') + 1;
-    const em = EMAIL_RE.exec(rest.slice(off));
+  if (src.startsWith('mailto:', i) || src.startsWith('xmpp:', i)) {
+    const off = i + src.indexOf(':', i) + 1;
+    const em = EMAIL_RE.exec(src.slice(off));
     if (em) {
-      let text = rest.slice(0, off) + em[0];
-      if (rest.startsWith('xmpp:')) {
-        const extra = /^\/[A-Za-z0-9@.]+/.exec(rest.slice(text.length));
+      let text = src.slice(i, off) + em[0];
+      if (src.startsWith('xmpp:', i)) {
+        const extra = /^\/[A-Za-z0-9@.]+/.exec(src.slice(i + text.length));
         if (extra) text += extra[0];
       }
       return { text, href: text, len: text.length };
     }
   }
-  m = EMAIL_RE.exec(rest);
-  if (m) return { text: m[0], href: 'mailto:' + m[0], len: m[0].length };
+  // plain email: only plausible when the local-part run at i is
+  // immediately followed by '@'
+  {
+    let j = i;
+    while (j < len && isLocalCode(src.charCodeAt(j))) j++;
+    if (j > i && src[j] === '@') {
+      const m = EMAIL_RE.exec(src.slice(i));
+      if (m) return { text: m[0], href: 'mailto:' + m[0], len: m[0].length };
+    }
+  }
   return null;
+}
+
+function isLabelCode(cc) {
+  return (cc >= 48 && cc <= 57) || (cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) || cc === 45;
+}
+function isLocalCode(cc) {
+  return (cc >= 48 && cc <= 57) || (cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) ||
+    cc === 46 || cc === 95 || cc === 43 || cc === 45;
 }
 
 // The inline scanner. Returns the node list for a block's text.
@@ -531,14 +561,21 @@ function inlineParse(src, refs, inLink) {
   // marked's fe() bound: the last index of a delimiter run of each
   // character whose preceding character is not whitespace — no closer
   // can start beyond it.
-  const lastCloserIdx = { '*': -1, '_': -1 };
+  let lastCloserIdx = { '*': -1, '_': -1 };
+  let masked = null;
+  let hidden = null;
+  // The mask structures serve only the emphasis and
+  // strikethrough scans; build them lazily on first use so
+  // plain inline strings never pay for them.
+  const ensureMask = () => {
+    if (hidden !== null) return;
   // a character preceded by an odd run of backslashes is escaped
   // and invisible in marked's mask (it becomes '+')
-  const masked = new Array(src.length).fill(false);
+  masked = new Uint8Array(src.length);
   {
     let bs = 0;
     for (let s = 0; s < src.length; s++) {
-      if (bs % 2 === 1) masked[s] = true;
+      if (bs % 2 === 1) masked[s] = 1;
       bs = src[s] === '\\' ? bs + 1 : 0;
     }
   }
@@ -550,13 +587,22 @@ function inlineParse(src, refs, inLink) {
   // spans themselves, and HTML tags. Positions in a hidden region
   // are invisible to the emphasis scan. (Step 1, reflinkSearch, is
   // approximated by skipConstruct during the scan.)
-  const hidden = new Uint8Array(src.length);
+  hidden = new Uint8Array(src.length);
   {
     const spans = [];
     let j = 0;
     while (j < src.length) {
-      if (src[j] === '\\' && j + 1 < src.length && isPunct(src[j + 1])) { j += 2; continue; }
-      if (src[j] !== '`') { j++; continue; }
+      // only backslashes and backtick runs matter in this pass
+      const nb = src.indexOf('\\', j);
+      const nt = src.indexOf('`', j);
+      const nxt = nb === -1 ? nt : (nt === -1 ? nb : Math.min(nb, nt));
+      if (nxt === -1) break;
+      j = nxt;
+      if (src[j] === '\\') {
+        if (j + 1 < src.length && isPunct(src[j + 1])) { j += 2; continue; }
+        j++;
+        continue;
+      }
       let R = 0;
       while (src[j + R] === '`') R++;
       // the closing run is the first run of exactly R backticks:
@@ -578,12 +624,25 @@ function inlineParse(src, refs, inLink) {
       spans.push([j, closeEnd]);
       j = closeEnd;
     }
-    const spanAt = new Map(spans.map(([a, b]) => [a, b]));
+    // spans are disjoint and ordered: a monotone pointer serves
+    // the main walk; binary search serves lookaheads inside
+    // link constructs
+    let spPtr = 0;
+    const spanEndAt = (pos) => {
+      let lo = 0, hi = spans.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (spans[mid][0] === pos) return spans[mid][1];
+        if (spans[mid][0] < pos) lo = mid + 1; else hi = mid - 1;
+      }
+      return -1;
+    };
     let k = 0;
     while (k < src.length) {
       const ck = src[k];
       if (ck === '\\' && k + 1 < src.length && isPunct(src[k + 1])) { k += 2; continue; }
-      if (spanAt.has(k)) { const e = spanAt.get(k); hidden.fill(1, k, e); k = e; continue; }
+      while (spPtr < spans.length && spans[spPtr][0] < k) spPtr++;
+      if (spPtr < spans.length && spans[spPtr][0] === k) { const e = spans[spPtr][1]; hidden.fill(1, k, e); k = e; spPtr++; continue; }
       if (ck === '<' && src[k + 1] !== ' ') {
         let e = k + 1;
         while (e < src.length && src[e] !== '<' && src[e] !== '>') e++;
@@ -595,7 +654,8 @@ function inlineParse(src, refs, inLink) {
         let e = k + (ck === '!' ? 2 : 1);
         let ok = false;
         while (e < src.length) {
-          if (spanAt.has(e)) { e = spanAt.get(e); continue; }
+          const se = spanEndAt(e);
+          if (se !== -1) { e = se; continue; }
           const ce = src[e];
           if (ce === ']') { ok = true; break; }
           if (ce === '[' || ce === '`') break;
@@ -629,7 +689,7 @@ function inlineParse(src, refs, inLink) {
     if (!isWs(pv)) lastCloserIdx[ch] = s;
     s = e - 1;
   }
-
+  };
   const flush = () => {
     if (buf !== '') {
       // inside a <pre>/<code>/<kbd>/<script> inline span, marked's
@@ -653,7 +713,13 @@ function inlineParse(src, refs, inLink) {
 
   // Find the ']' matching the bracket whose text starts at `from`,
   // counting nested brackets (code spans and escapes skipped).
+  const fmcCache = new Map();
   const findMatchingClose = (from) => {
+    let r = fmcCache.get(from);
+    if (r === undefined) { r = findMatchingCloseRaw(from); fmcCache.set(from, r); }
+    return r;
+  };
+  const findMatchingCloseRaw = (from) => {
     let depth = 1;
     let j = from;
     while (j < src.length) {
@@ -685,21 +751,29 @@ function inlineParse(src, refs, inLink) {
   // including the rejection when a link already formed inside.
   const wouldFormAt = (top, closeIdx) => {
     if (!top || top.inactive) return false;
-    const text = src.slice(top.textStart, closeIdx);
-    const textValid = validLinkText(text);
-    let forms = false;
-    if (src[closeIdx + 1] === '(' && textValid) {
-      if (parseLinkDest(src, closeIdx + 1)) forms = true;
-    }
-    if (!forms && src[closeIdx + 1] === '[' && textValid) {
-      const lab = scanRefLabel(src, closeIdx + 2);
-      if (lab) {
-        const labelText = lab.label === '' ? text : lab.label;
-        forms = refs.has(normalizeLabel(labelText));
+    // the text/tail/reference part of the decision depends only on
+    // the source and the (fixed) definitions, so it is cached on
+    // the bracket; only the contains-a-link check is dynamic
+    let forms = top._wfClose === closeIdx ? top._wf : undefined;
+    if (forms === undefined) {
+      const text = src.slice(top.textStart, closeIdx);
+      const textValid = validLinkText(text);
+      forms = false;
+      if (src[closeIdx + 1] === '(' && textValid) {
+        if (parseLinkDest(src, closeIdx + 1)) forms = true;
       }
-    }
-    if (!forms) {
-      forms = text.length <= 999 && validNolinkText(text) && refs.has(normalizeLabel(text));
+      if (!forms && src[closeIdx + 1] === '[' && textValid) {
+        const lab = scanRefLabel(src, closeIdx + 2);
+        if (lab) {
+          const labelText = lab.label === '' ? text : lab.label;
+          forms = refs.has(normalizeLabel(labelText));
+        }
+      }
+      if (!forms) {
+        forms = text.length <= 999 && validNolinkText(text) && refs.has(normalizeLabel(text));
+      }
+      top._wf = forms;
+      top._wfClose = closeIdx;
     }
     if (!forms) return false;
     if (!top.isImage) {
@@ -747,6 +821,7 @@ function inlineParse(src, refs, inLink) {
   // stay hidden there; an interval that contains the region (the
   // outer construct itself) or crosses its edge does not hide.
   const hiddenInRegion = (q, regionStart, limit) => {
+    ensureMask();
     if (!hidden[q]) return false;
     if (limit >= src.length) return true;
     let hs = q;
@@ -761,6 +836,7 @@ function inlineParse(src, refs, inLink) {
   // reference construct), an emphasis scan starting inside it
   // resumes only after the construct's end. Returns 0 if none.
   const maskResumeAt = (pos) => {
+    ensureMask();
     if (hidden[pos]) {
       let e = pos;
       while (e < src.length && hidden[e]) e++;
@@ -1183,6 +1259,7 @@ function inlineParse(src, refs, inLink) {
     }
 
     if (c === '*' || c === '_') {
+      ensureMask();
       // Inside a bracket whose link will form, marked lexes the
       // text separately: an emphasis scan may not cross its ']'.
       // Inside a bracket whose construct is only hidden by the
@@ -1241,11 +1318,13 @@ function inlineParse(src, refs, inLink) {
     // GFM bare autolinks — suppressed inside the text of a bracket
     // that will form a link, and document-wide after an unclosed
     // <a ...> tag.
-    if (!inLink && !S.inLinkTag && (brackets.length === 0 || !insideFormingBracket())) {
+    const autoActive = !inLink && !S.inLinkTag &&
+      (brackets.length === 0 || !insideFormingBracket());
+    if (autoActive) {
       const c0 = c;
       if (c0 === 'h' || c0 === 'H' || c0 === 'f' || c0 === 'F' || c0 === 'w' || c0 === 'm' || c0 === 'x' ||
           (LOCAL_START.test(c0) && (i === 0 || !LOCAL_START.test(src[i - 1])))) {
-        const a = matchBareAutolink(src, i, prevSignificantChar());
+        const a = matchBareAutolink(src, i, prevSignificantChar);
         if (a) {
           flush();
           nodes.push({
@@ -1259,14 +1338,47 @@ function inlineParse(src, refs, inLink) {
       }
     }
 
-    buf += c;
-    i++;
+    // plain text: consume the longest run of characters that need
+    // no dispatch — no token starts, and (while the autolink gate
+    // is active) no position where a bare autolink could start
+    let j = i + 1;
+    if (autoActive) {
+      let pv = src.charCodeAt(j - 1);
+      while (j < len) {
+        const cc = src.charCodeAt(j);
+        if (cc < 128 && (STOP_AUTO[cc] === 1 ||
+            (LOCAL_TBL[cc] === 1 && !(pv < 128 && LOCAL_TBL[pv] === 1)))) break;
+        pv = cc;
+        j++;
+      }
+    } else {
+      while (j < len) {
+        const cc = src.charCodeAt(j);
+        if (cc < 128 && STOP_PLAIN[cc] === 1) break;
+        j++;
+      }
+    }
+    buf += src.slice(i, j);
+    i = j;
   }
   flush();
   return nodes;
 }
 
 const LOCAL_START = /[A-Za-z0-9._+-]/;
+
+// char classes for the plain-text run scanner: token-start chars,
+// plus (when the bare-autolink gate is active) the letters a bare
+// autolink can start with; and the email local-part class
+const STOP_PLAIN = new Uint8Array(128);
+for (const code of [10, 33, 42, 60, 91, 92, 93, 95, 96, 126]) STOP_PLAIN[code] = 1;
+const STOP_AUTO = new Uint8Array(STOP_PLAIN);
+for (const code of [72, 70, 104, 102, 119, 109, 120]) STOP_AUTO[code] = 1;
+const LOCAL_TBL = new Uint8Array(128);
+for (let c = 48; c <= 57; c++) LOCAL_TBL[c] = 1;
+for (let c = 65; c <= 90; c++) LOCAL_TBL[c] = 1;
+for (let c = 97; c <= 122; c++) LOCAL_TBL[c] = 1;
+for (const code of [46, 95, 43, 45]) LOCAL_TBL[code] = 1;
 
 // Full code point before index i (undefined at the start).
 function charBefore(src, i) {
@@ -1281,7 +1393,14 @@ function charAfter(src, i) {
   return String.fromCodePoint(src.codePointAt(i));
 }
 
+// Strings with no token starts, no hard-break pattern and no
+// possible bare autolink scan to a single text node; rendering
+// them directly skips the scanner's setup entirely.
+const PLAIN_INLINE_RE = /[`\\\[\]<*_~]| {2,}\n|@|https?:\/\/|ftp:\/\//i;
 function parseInlineText(src, refs) {
+  if (!PLAIN_INLINE_RE.test(src) && !src.includes('www.')) {
+    return escapeHtml(S.inRawBlock ? src : transformText(src));
+  }
   return renderInlineNodes(inlineParse(src, refs, false));
 }
 
