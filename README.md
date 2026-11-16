@@ -39,3 +39,4 @@ with `cases.json` in `/input` (or set `MAKEFUN_INPUT_DIR` /
 ## License
 
 MIT — see [LICENSE](LICENSE).
+<!-- Round 2: entry files re-authored under a live recording; renderer content unchanged. -->
